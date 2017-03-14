@@ -14,19 +14,17 @@ class Recipe
      */
     public static function getFavicon($url, $attributes = [])
     {
-        if (self::ishttps()) {
-            $protocol = 'https://';
-        } else {
-            $protocol = 'http://';
-        }
-        $apiUrl = $protocol.'www.google.com/s2/favicons?domain=';
-        $attr = self::arrayToString($attributes);
+        $attr = trim(self::arrayToString($attributes));
 
-        if (strpos($url, 'http') !== false) {
-            $url = str_replace('http://', '', $url);
+        if (!empty($attr)) {
+            $attr = " $attr";
         }
 
-        return '<img src="'.$apiUrl.$url.'" '.trim($attr).' />';
+        return sprintf(
+            '<img src="https://www.google.com/s2/favicons?domain=%s"%s/>',
+            urlencode($url),
+            $attr
+        );
     }
 
     /**
@@ -41,15 +39,15 @@ class Recipe
      */
     public static function getQRcode($string, $width = 150, $height = 150, $attributes = [])
     {
-        if (self::ishttps()) {
+        $protocol = 'http://';
+        if (self::isHttps()) {
             $protocol = 'https://';
-        } else {
-            $protocol = 'http://';
         }
-        $attr = self::arrayToString($attributes);
+
+        $attr = trim(self::arrayToString($attributes));
         $apiUrl = $protocol.'chart.apis.google.com/chart?chs='.$width.'x'.$height.'&cht=qr&chl='.urlencode($string);
 
-        return '<img src="'.$apiUrl.'" '.trim($attr).' />';
+        return '<img src="'.$apiUrl.'" '.$attr.' />';
     }
 
     /**
@@ -77,14 +75,21 @@ class Recipe
      */
     public static function getGravatar($email, $size = 80, $default = 'mm', $rating = 'g', $attributes = [])
     {
-        $attr = self::arrayToString($attributes);
-        if (self::ishttps()) {
-            $url = 'https://secure.gravatar.com/';
-        } else {
-            $url = 'http://www.gravatar.com/';
-        }
+        $attr = trim(self::arrayToString($attributes));
 
-        return '<img src="'.$url.'avatar.php?gravatar_id='.md5(strtolower(trim($email))).'&default='.$default.'&size='.$size.'&rating='.$rating.'" width="'.$size.'px" height="'.$size.'px" '.trim($attr).' />';
+        $url = 'https://www.gravatar.com/';
+
+        return sprintf(
+            '<img src="%savatar.php?gravatar_id=%s&default=%s&size=%s&rating=%s" width="%spx" height="%spx" %s />',
+            $url,
+            md5(strtolower(trim($email))),
+            $default,
+            $size,
+            $rating,
+            $size,
+            $size,
+            $attr
+        );
     }
 
     /**
@@ -98,20 +103,22 @@ class Recipe
      */
     public static function createLinkTag($link, $text = '', $attributes = [])
     {
+        $linkTag = '<a href="'.str_replace(['"', "'"], [urlencode('"'), urlencode("'")], $link).'"';
+
         if (self::validateEmail($link)) {
             $linkTag = '<a href="mailto:'.$link.'"';
-        } else {
-            $linkTag = '<a href="'.$link.'"';
         }
-        $attr = '';
+
         if (!isset($attributes['title']) && !empty($text)) {
             $linkTag .= ' title="'.str_replace('"', '', strip_tags($text)).'" ';
         }
+
         if (empty($text)) {
             $text = $link;
         }
-        $attr .= self::arrayToString($attributes);
-        $linkTag .= trim($attr).'>'.htmlspecialchars($text, ENT_QUOTES, 'UTF-8').'</a>';
+
+        $attr = trim(self::arrayToString($attributes));
+        $linkTag .= $attr.'>'.htmlspecialchars($text, ENT_QUOTES, 'UTF-8').'</a>';
 
         return $linkTag;
     }
@@ -119,15 +126,30 @@ class Recipe
     /**
      * Validate Email address.
      *
-     * @param string $address Email address to validate
+     * @param string $address          Email address to validate
+     * @param bool   $tempEmailAllowed Allow Temporary email addresses?
      *
      * @return bool True if email address is valid, false is returned otherwise
      */
-    public static function validateEmail($address)
+    public static function validateEmail($address, $tempEmailAllowed = true)
     {
-        if (filter_var($address, FILTER_VALIDATE_EMAIL)) {
-            list(, $mailDomain) = explode('@', $address);
-            if (checkdnsrr($mailDomain, 'MX')) {
+        strpos($address, '@') ? list(, $mailDomain) = explode('@', $address) : $mailDomain = null;
+        if (filter_var($address, FILTER_VALIDATE_EMAIL) &&
+            !is_null($mailDomain) &&
+            checkdnsrr($mailDomain, 'MX')
+        ) {
+            if ($tempEmailAllowed) {
+                return true;
+            } else {
+                $handle = fopen(__DIR__.'/banned.txt', 'r');
+                $temp = [];
+                while (($line = fgets($handle)) !== false) {
+                    $temp[] = trim($line);
+                }
+                if (in_array($mailDomain, $temp)) {
+                    return false;
+                }
+
                 return true;
             }
         }
@@ -144,16 +166,12 @@ class Recipe
      */
     public static function validateURL($url)
     {
-        if (filter_var($url, FILTER_VALIDATE_URL)) {
-            return true;
-        }
-
-        return false;
+        return (bool) filter_var($url, FILTER_VALIDATE_URL);
     }
 
     /**
-     * Read RSS feed as array
-     * requires.
+     * Read RSS feed as array.
+     * requires simplexml.
      *
      * @see http://php.net/manual/en/simplexml.installation.php
      *
@@ -163,9 +181,10 @@ class Recipe
      */
     public static function rssReader($url)
     {
-        if (strpos($url, 'http') === false) {
+        if (strpos($url, 'http') !== 0) {
             $url = 'http://'.$url;
         }
+
         $feed = self::curl($url);
         $xml = simplexml_load_string($feed, 'SimpleXMLElement', LIBXML_NOCDATA);
 
@@ -173,22 +192,21 @@ class Recipe
     }
 
     /**
-     * Convert objecte to the array.
+     * Convert object to the array.
      *
      * @param object $object PHP object
+     *
+     * @throws \Exception
      *
      * @return array
      */
     public static function objectToArray($object)
     {
-        if (!is_object($object) && !is_array($object)) {
-            return $object;
-        }
         if (is_object($object)) {
-            $object = get_object_vars($object);
+            return json_decode(json_encode($object), true);
+        } else {
+            throw new \Exception('Not an object');
         }
-
-        return array_map(['self', 'objectToArray'], $object);
     }
 
     /**
@@ -196,44 +214,48 @@ class Recipe
      *
      * @param array $array PHP array
      *
+     * @throws \Exception
+     *
      * @return object
      */
-    public static function arrayToObject($array)
+    public static function arrayToObject(array $array = [])
     {
         if (!is_array($array)) {
-            return $array;
+            throw new \Exception('Not an array');
         }
 
         $object = new \stdClass();
         if (is_array($array) && count($array) > 0) {
             foreach ($array as $name => $value) {
-                $object->$name = self::arrayToObject($value);
+                if (is_array($value)) {
+                    $object->{$name} = self::arrayToObject($value);
+                } else {
+                    $object->{$name} = $value;
+                }
             }
-
-            return $object;
-        } else {
-            return false;
         }
+
+        return $object;
     }
 
     /**
-     * Convert Array to string
-     * expected output: <key1>="value1" <key2>="value2".
+     * Convert Array to string.
      *
-     * @param array $array array to convert to string
+     * @param array  $array     array to convert to string
+     * @param string $delimiter
      *
-     * @return string
+     * @throws \Exception
+     *
+     * @return string <key1>="value1" <key2>="value2"
      */
-    public static function arrayToString($array = [])
+    public static function arrayToString(array $array = [], $delimiter = ' ')
     {
-        $string = '';
-        if (isset($array) && is_array($array) && !empty($array)) {
-            foreach ($array as $key => $value) {
-                $string .= $key.'="'.$value.'" ';
-            }
+        $pairs = [];
+        foreach ($array as $key => $value) {
+            $pairs[] = "$key=\"$value\"";
         }
 
-        return rtrim($string, ' ');
+        return implode($delimiter, $pairs);
     }
 
     /**
@@ -246,15 +268,19 @@ class Recipe
     public static function hex2rgb($color)
     {
         $color = str_replace('#', '', $color);
-        if (strlen($color) == 3):
-            list($r, $g, $b) = [$color[0].$color[0], $color[1].$color[1], $color[2].$color[2]]; else:
-            list($r, $g, $b) = [$color[0].$color[1], $color[2].$color[3], $color[4].$color[5]];
-        endif;
-        $r = hexdec($r);
-        $g = hexdec($g);
-        $b = hexdec($b);
 
-        return 'rgb('.$r.', '.$g.', '.$b.')';
+        $hex = strlen($color) == 3
+            ? [$color[0].$color[0], $color[1].$color[1], $color[2].$color[2]]
+            : [$color[0].$color[1], $color[2].$color[3], $color[4].$color[5]];
+
+        list($r, $g, $b) = $hex;
+
+        return sprintf(
+            'rgb(%s, %s, %s)',
+            hexdec($r),
+            hexdec($g),
+            hexdec($b)
+        );
     }
 
     /**
@@ -270,8 +296,7 @@ class Recipe
     public static function rgb2hex($r, $g = null, $b = null)
     {
         if (strpos($r, 'rgb') !== false || strpos($r, 'rgba') !== false) {
-            preg_match_all('/\(([^\)]*)\)/', $r, $matches);
-            if (isset($matches[1][0])) {
+            if (preg_match_all('/\(([^\)]*)\)/', $r, $matches) && isset($matches[1][0])) {
                 list($r, $g, $b) = explode(',', $matches[1][0]);
             } else {
                 return false;
@@ -288,18 +313,24 @@ class Recipe
     }
 
     /**
-     * Generate Random Password.
+     * Generate Simple Random Password.
      *
-     * @param int $length length of generated password, default 8
+     * @param int    $length         length of generated password, default 8
+     * @param string $customAlphabet a custom alphabet string
      *
      * @return string Generated Password
      */
-    public static function generateRandomPassword($length = 8)
+    public static function generateRandomPassword($length = 8, $customAlphabet = null)
     {
-        $alphabet = 'abcdefghijklmnopqrstuwxyzABCDEFGHIJKLMNOPQRSTUWXYZ0123456789';
         $pass = [];
+        if (strlen(trim($customAlphabet))) {
+            $alphabet = trim($customAlphabet);
+        } else {
+            $alphabet = 'abcdefghijklmnopqrstuwxyzABCDEFGHIJKLMNOPQRSTUWXYZ0123456789';
+        }
+
         $alphaLength = strlen($alphabet) - 1;
-        for ($i = 0; $i < $length; $i++) {
+        for ($i = 0; $i < $length; ++$i) {
             $n = rand(0, $alphaLength);
             $pass[] = $alphabet[$n];
         }
@@ -317,11 +348,11 @@ class Recipe
      */
     public static function simpleEncode($string, $passkey = null)
     {
+        $key = $passkey;
         if (!isset($passkey) || empty($passkey)) {
             $key = self::generateServerSpecificHash();
-        } else {
-            $key = $passkey;
         }
+
         $result = '';
         for ($i = 0; $i < strlen($string); $i++) {
             $char = substr($string, $i, 1);
@@ -343,11 +374,11 @@ class Recipe
      */
     public static function simpleDecode($string, $passkey = null)
     {
+        $key = $passkey;
         if (!isset($passkey) || empty($passkey)) {
             $key = self::generateServerSpecificHash();
-        } else {
-            $key = $passkey;
         }
+
         $result = '';
         $string = base64_decode($string);
         for ($i = 0; $i < strlen($string); $i++) {
@@ -369,21 +400,19 @@ class Recipe
      */
     public static function generateServerSpecificHash()
     {
-        return (isset($_SERVER['SERVER_NAME']) && !empty($_SERVER['SERVER_NAME'])) ? md5($_SERVER['SERVER_NAME']) : md5(pathinfo(__FILE__, PATHINFO_FILENAME));
+        return (isset($_SERVER['SERVER_NAME']) && !empty($_SERVER['SERVER_NAME']))
+            ? md5($_SERVER['SERVER_NAME'])
+            : md5(pathinfo(__FILE__, PATHINFO_FILENAME));
     }
 
     /**
-     * Check to see if the current page is being server over SSL or not.
+     * Check to see if the current page is being served over SSL.
      *
      * @return bool
      */
     public static function isHttps()
     {
-        if (isset($_SERVER['HTTPS']) && !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
-            return true;
-        }
-
-        return false;
+        return isset($_SERVER['HTTPS']) && !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
     }
 
     /**
@@ -393,7 +422,8 @@ class Recipe
      */
     public static function isAjax()
     {
-        if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
+        if (isset($_SERVER['HTTP_X_REQUESTED_WITH'])
+            && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
             return true;
         }
 
@@ -431,12 +461,11 @@ class Recipe
      */
     public static function getCurrentURL()
     {
-        $url = '';
+        $url = 'http://';
         if (self::isHttps()) {
-            $url .= 'https://';
-        } else {
-            $url .= 'http://';
+            $url = 'https://';
         }
+
         if (isset($_SERVER['PHP_AUTH_USER'])) {
             $url .= $_SERVER['PHP_AUTH_USER'];
             if (isset($_SERVER['PHP_AUTH_PW'])) {
@@ -452,12 +481,14 @@ class Recipe
         }
         if (!isset($_SERVER['REQUEST_URI'])) {
             $url .= substr($_SERVER['PHP_SELF'], 1);
-            if (isset($_SERVER['QUERY_STRING'])):
+            if (isset($_SERVER['QUERY_STRING'])) {
                 $url .= '?'.$_SERVER['QUERY_STRING'];
-            endif;
-        } else {
-            $url .= $_SERVER['REQUEST_URI'];
+            }
+
+            return $url;
         }
+
+        $url .= $_SERVER['REQUEST_URI'];
 
         return $url;
     }
@@ -474,14 +505,25 @@ class Recipe
         if (!empty($headerContainingIPAddress)) {
             return isset($_SERVER[$headerContainingIPAddress]) ? trim($_SERVER[$headerContainingIPAddress]) : false;
         }
-        $knowIPkeys = ['HTTP_CLIENT_IP', 'HTTP_X_FORWARDED_FOR', 'HTTP_X_FORWARDED', 'HTTP_X_CLUSTER_CLIENT_IP', 'HTTP_FORWARDED_FOR', 'HTTP_FORWARDED', 'REMOTE_ADDR'];
+
+        $knowIPkeys = [
+            'HTTP_CLIENT_IP',
+            'HTTP_X_FORWARDED_FOR',
+            'HTTP_X_FORWARDED',
+            'HTTP_X_CLUSTER_CLIENT_IP',
+            'HTTP_FORWARDED_FOR',
+            'HTTP_FORWARDED',
+            'REMOTE_ADDR',
+        ];
+
         foreach ($knowIPkeys as $key) {
-            if (array_key_exists($key, $_SERVER) === true) {
-                foreach (explode(',', $_SERVER[$key]) as $ip) {
-                    $ip = trim($ip);
-                    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false) {
-                        return $ip;
-                    }
+            if (array_key_exists($key, $_SERVER) !== true) {
+                continue;
+            }
+            foreach (explode(',', $_SERVER[$key]) as $ip) {
+                $ip = trim($ip);
+                if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false) {
+                    return $ip;
                 }
             }
         }
@@ -493,11 +535,33 @@ class Recipe
      * Detect if user is on mobile device.
      *
      * @return bool
+     *
+     * @todo Put everything to an array & then implode it?
      */
     public static function isMobile()
     {
-        $useragent = $_SERVER['HTTP_USER_AGENT'];
-        if (preg_match('/(android|bb\d+|meego).+mobile|avantgo|bada\/|blackberry|blazer|compal|elaine|fennec|hiptop|iemobile|ip(hone|od)|iris|kindle|lge |maemo|midp|mmp|mobile.+firefox|netfront|opera m(ob|in)i|palm( os)?|phone|p(ixi|re)\/|plucker|pocket|psp|series(4|6)0|symbian|treo|up\.(browser|link)|vodafone|wap|windows ce|xda|xiino/i', $useragent) || preg_match('/1207|6310|6590|3gso|4thp|50[1-6]i|770s|802s|a wa|abac|ac(er|oo|s\-)|ai(ko|rn)|al(av|ca|co)|amoi|an(ex|ny|yw)|aptu|ar(ch|go)|as(te|us)|attw|au(di|\-m|r |s )|avan|be(ck|ll|nq)|bi(lb|rd)|bl(ac|az)|br(e|v)w|bumb|bw\-(n|u)|c55\/|capi|ccwa|cdm\-|cell|chtm|cldc|cmd\-|co(mp|nd)|craw|da(it|ll|ng)|dbte|dc\-s|devi|dica|dmob|do(c|p)o|ds(12|\-d)|el(49|ai)|em(l2|ul)|er(ic|k0)|esl8|ez([4-7]0|os|wa|ze)|fetc|fly(\-|_)|g1 u|g560|gene|gf\-5|g\-mo|go(\.w|od)|gr(ad|un)|haie|hcit|hd\-(m|p|t)|hei\-|hi(pt|ta)|hp( i|ip)|hs\-c|ht(c(\-| |_|a|g|p|s|t)|tp)|hu(aw|tc)|i\-(20|go|ma)|i230|iac( |\-|\/)|ibro|idea|ig01|ikom|im1k|inno|ipaq|iris|ja(t|v)a|jbro|jemu|jigs|kddi|keji|kgt( |\/)|klon|kpt |kwc\-|kyo(c|k)|le(no|xi)|lg( g|\/(k|l|u)|50|54|\-[a-w])|libw|lynx|m1\-w|m3ga|m50\/|ma(te|ui|xo)|mc(01|21|ca)|m\-cr|me(rc|ri)|mi(o8|oa|ts)|mmef|mo(01|02|bi|de|do|t(\-| |o|v)|zz)|mt(50|p1|v )|mwbp|mywa|n10[0-2]|n20[2-3]|n30(0|2)|n50(0|2|5)|n7(0(0|1)|10)|ne((c|m)\-|on|tf|wf|wg|wt)|nok(6|i)|nzph|o2im|op(ti|wv)|oran|owg1|p800|pan(a|d|t)|pdxg|pg(13|\-([1-8]|c))|phil|pire|pl(ay|uc)|pn\-2|po(ck|rt|se)|prox|psio|pt\-g|qa\-a|qc(07|12|21|32|60|\-[2-7]|i\-)|qtek|r380|r600|raks|rim9|ro(ve|zo)|s55\/|sa(ge|ma|mm|ms|ny|va)|sc(01|h\-|oo|p\-)|sdk\/|se(c(\-|0|1)|47|mc|nd|ri)|sgh\-|shar|sie(\-|m)|sk\-0|sl(45|id)|sm(al|ar|b3|it|t5)|so(ft|ny)|sp(01|h\-|v\-|v )|sy(01|mb)|t2(18|50)|t6(00|10|18)|ta(gt|lk)|tcl\-|tdg\-|tel(i|m)|tim\-|t\-mo|to(pl|sh)|ts(70|m\-|m3|m5)|tx\-9|up(\.b|g1|si)|utst|v400|v750|veri|vi(rg|te)|vk(40|5[0-3]|\-v)|vm40|voda|vulc|vx(52|53|60|61|70|80|81|83|85|98)|w3c(\-| )|webc|whit|wi(g |nc|nw)|wmlb|wonu|x700|yas\-|your|zeto|zte\-/i', substr($useragent, 0, 4))) {
+        if (preg_match('/(android|bb\d+|meego).+mobile|avantgo|bada\/|blackberry|blazer|compal|elaine|fennec|hiptop'
+                .'|iemobile|ip(hone|od)|iris|kindle|lge |maemo|midp|mmp|mobile.+firefox|netfront|opera m(ob|in)i'
+                .'|palm( os)?|phone|p(ixi|re)\/|plucker|pocket|psp|series(4|6)0|symbian|treo|up\.(browser|link)'
+                .'|vodafone|wap|windows ce|xda|xiino/i', $_SERVER['HTTP_USER_AGENT'])
+            || preg_match('/1207|6310|6590|3gso|4thp|50[1-6]i|770s|802s|a wa|abac|ac(er|oo|s\-)|ai(ko|rn)|al(av|ca|co)'
+                .'|amoi|an(ex|ny|yw)|aptu|ar(ch|go)|as(te|us)|attw|au(di|\-m|r |s )|avan|be(ck|ll|nq)|bi'
+                .'(lb|rd)|bl(ac|az)|br(e|v)w|bumb|bw\-(n|u)|c55\/|capi|ccwa|cdm\-|cell|chtm|cldc|cmd\-|co'
+                .'(mp|nd)|craw|da(it|ll|ng)|dbte|dc\-s|devi|dica|dmob|do(c|p)o|ds(12|\-d)|el(49|ai)|em(l2|ul)'
+                .'|er(ic|k0)|esl8|ez([4-7]0|os|wa|ze)|fetc|fly(\-|_)|g1 u|g560|gene|gf\-5|g\-mo|go(\.w|od)|gr(ad|un)|'
+                .'haie|hcit|hd\-(m|p|t)|hei\-|hi(pt|ta)|hp( i|ip)|hs\-c|ht(c(\-| |_|a|g|p|s|t)|tp)|hu(aw|tc)|'
+                .'i\-(20|go|ma)|i230|iac( |\-|\/)|ibro|idea|ig01|ikom|im1k|inno|ipaq|iris|ja(t|v)a|jbro|jemu|jigs|'
+                .'kddi|keji|kgt( |\/)|klon|kpt |kwc\-|kyo(c|k)|le(no|xi)|lg( g|\/(k|l|u)|50|54|\-[a-w])|libw|lynx|'
+                .'m1\-w|m3ga|m50\/|ma(te|ui|xo)|mc(01|21|ca)|m\-cr|me(rc|ri)|mi(o8|oa|ts)|mmef|mo(01|02|bi|de|do|'
+                .'t(\-| |o|v)|zz)|mt(50|p1|v )|mwbp|mywa|n10[0-2]|n20[2-3]|n30(0|2)|n50(0|2|5)|n7(0(0|1)|10)|ne((c|m)'
+                .'\-|on|tf|wf|wg|wt)|nok(6|i)|nzph|o2im|op(ti|wv)|oran|owg1|p800|pan(a|d|t)|pdxg|pg(13|\-([1-8]|c))|'
+                .'phil|pire|pl(ay|uc)|pn\-2|po(ck|rt|se)|prox|psio|pt\-g|qa\-a|qc(07|12|21|32|60|\-[2-7]|i\-)|qtek|'
+                .'r380|r600|raks|rim9|ro(ve|zo)|s55\/|sa(ge|ma|mm|ms|ny|va)|sc(01|h\-|oo|p\-)|sdk\/|se(c(\-|0|1)|47|'
+                .'mc|nd|ri)|sgh\-|shar|sie(\-|m)|sk\-0|sl(45|id)|sm(al|ar|b3|it|t5)|so(ft|ny)|sp(01|h\-|v\-|v )|sy'
+                .'(01|mb)|t2(18|50)|t6(00|10|18)|ta(gt|lk)|tcl\-|tdg\-|tel(i|m)|tim\-|t\-mo|to(pl|sh)|ts(70|m\-|m3|m5)'
+                .'|tx\-9|up(\.b|g1|si)|utst|v400|v750|veri|vi(rg|te)|vk(40|5[0-3]|\-v)|vm40|voda|vulc|vx(52|53|60|61|'
+                .'70|80|81|83|85|98)|w3c(\-| )|webc|whit|wi(g |nc|nw)|wmlb|wonu|x700|yas\-|your|zeto|zte\-/i',
+                substr($_SERVER['HTTP_USER_AGENT'], 0, 4))) {
             return true;
         }
 
@@ -545,14 +609,9 @@ class Recipe
         $pattern = '#(?<browser>'.implode('|', $known).')[/ ]+(?<version>[0-9.|a-zA-Z.]*)#';
         preg_match_all($pattern, $u_agent, $matches);
         $i = count($matches['browser']);
-        if ($i != 1) {
-            if (strripos($u_agent, 'Version') < strripos($u_agent, $ub)) {
-                $version = $matches['version'][0];
-            } else {
-                $version = $matches['version'][1];
-            }
-        } else {
-            $version = $matches['version'][0];
+        $version = $matches['version'][0];
+        if ($i != 1 && strripos($u_agent, 'Version') >= strripos($u_agent, $ub)) {
+            $version = $matches['version'][1];
         }
         if ($version == null || $version == '') {
             $version = '?';
@@ -570,6 +629,7 @@ class Recipe
     {
         $result = false;
         $ip_data = @json_decode(self::curl('http://www.geoplugin.net/json.gp?ip='.self::getClientIP()));
+
         if (isset($ip_data) && $ip_data->geoplugin_countryName != null) {
             $result = $ip_data->geoplugin_city.', '.$ip_data->geoplugin_countryCode;
         }
@@ -582,6 +642,8 @@ class Recipe
      *
      * @param int $number number to convert to word
      *
+     * @throws \Exception
+     *
      * @return string converted string
      */
     public static function numberToWord($number)
@@ -592,16 +654,50 @@ class Recipe
         $negative = 'negative ';
         $decimal = ' point ';
         $fraction = null;
-        $dictionary = [0 => 'zero', 1 => 'one', 2 => 'two', 3 => 'three', 4 => 'four', 5 => 'five', 6 => 'six', 7 => 'seven', 8 => 'eight', 9 => 'nine', 10 => 'ten', 11 => 'eleven', 12 => 'twelve', 13 => 'thirteen', 14 => 'fourteen', 15 => 'fifteen', 16 => 'sixteen', 17 => 'seventeen', 18 => 'eighteen', 19 => 'nineteen', 20 => 'twenty', 30 => 'thirty', 40 => 'fourty', 50 => 'fifty', 60 => 'sixty', 70 => 'seventy', 80 => 'eighty', 90 => 'ninety', 100 => 'hundred', 1000 => 'thousand', 1000000 => 'million', 1000000000 => 'billion', 1000000000000 => 'trillion', 1000000000000000 => 'quadrillion', 1000000000000000000 => 'quintillion'];
+        $dictionary = [
+            0                   => 'zero',
+            1                   => 'one',
+            2                   => 'two',
+            3                   => 'three',
+            4                   => 'four',
+            5                   => 'five',
+            6                   => 'six',
+            7                   => 'seven',
+            8                   => 'eight',
+            9                   => 'nine',
+            10                  => 'ten',
+            11                  => 'eleven',
+            12                  => 'twelve',
+            13                  => 'thirteen',
+            14                  => 'fourteen',
+            15                  => 'fifteen',
+            16                  => 'sixteen',
+            17                  => 'seventeen',
+            18                  => 'eighteen',
+            19                  => 'nineteen',
+            20                  => 'twenty',
+            30                  => 'thirty',
+            40                  => 'fourty',
+            50                  => 'fifty',
+            60                  => 'sixty',
+            70                  => 'seventy',
+            80                  => 'eighty',
+            90                  => 'ninety',
+            100                 => 'hundred',
+            1000                => 'thousand',
+            1000000             => 'million',
+            1000000000          => 'billion',
+            1000000000000       => 'trillion',
+            1000000000000000    => 'quadrillion',
+            1000000000000000000 => 'quintillion',
+        ];
 
         if (!is_numeric($number)) {
-            return false;
+            throw new \Exception('NaN');
         }
 
         if (($number >= 0 && (int) $number < 0) || (int) $number < 0 - PHP_INT_MAX) {
-            trigger_error('numberToWord only accepts numbers between -'.PHP_INT_MAX.' and '.PHP_INT_MAX, E_USER_WARNING);
-
-            return false;
+            throw new \Exception('numberToWord only accepts numbers between -'.PHP_INT_MAX.' and '.PHP_INT_MAX);
         }
 
         if ($number < 0) {
@@ -621,18 +717,22 @@ class Recipe
                 $tens = ((int) ($number / 10)) * 10;
                 $units = $number % 10;
                 $string = $dictionary[$tens];
+
                 if ($units) {
                     $string .= $hyphen.$dictionary[$units];
                 }
+
                 break;
 
             case $number < 1000:
                 $hundreds = $number / 100;
                 $remainder = $number % 100;
                 $string = $dictionary[$hundreds].' '.$dictionary[100];
+
                 if ($remainder) {
                     $string .= $conjunction.self::numberToWord($remainder);
                 }
+
                 break;
 
             default:
@@ -640,19 +740,23 @@ class Recipe
                 $numBaseUnits = (int) ($number / $baseUnit);
                 $remainder = $number % $baseUnit;
                 $string = self::numberToWord($numBaseUnits).' '.$dictionary[$baseUnit];
+
                 if ($remainder) {
                     $string .= $remainder < 100 ? $conjunction : $separator;
                     $string .= self::numberToWord($remainder);
                 }
+
                 break;
         }
 
         if (null !== $fraction && is_numeric($fraction)) {
             $string .= $decimal;
             $words = [];
+
             foreach (str_split((string) $fraction) as $number) {
                 $words[] = $dictionary[$number];
             }
+
             $string .= implode(' ', $words);
         }
 
@@ -669,24 +773,40 @@ class Recipe
      */
     public static function secondsToText($seconds, $returnAsWords = false)
     {
-        $periods = ['year' => 3.156e+7, 'month' => 2.63e+6, 'week' => 604800, 'day' => 86400, 'hour' => 3600, 'minute' => 60, 'second' => 1];
+        $periods = [
+            'year'   => 3.156e+7,
+            'month'  => 2.63e+6,
+            'week'   => 604800,
+            'day'    => 86400,
+            'hour'   => 3600,
+            'minute' => 60,
+            'second' => 1,
+        ];
+
         $parts = [];
         foreach ($periods as $name => $dur) {
             $div = floor($seconds / $dur);
+
             if ($div == 0) {
                 continue;
-            } elseif ($div == 1) {
+            }
+
+            if ($div == 1) {
                 $parts[] = ($returnAsWords ? self::numberToWord($div) : $div).' '.$name;
             } else {
                 $parts[] = ($returnAsWords ? self::numberToWord($div) : $div).' '.$name.'s';
             }
+
             $seconds %= $dur;
         }
+
         $last = array_pop($parts);
-        if (empty($parts)):
-            return $last; else:
-            return implode(', ', $parts).' and '.$last;
-        endif;
+
+        if (empty($parts)) {
+            return $last;
+        }
+
+        return implode(', ', $parts).' and '.$last;
     }
 
     /**
@@ -699,9 +819,7 @@ class Recipe
      */
     public static function minutesToText($minutes, $returnAsWords = false)
     {
-        $seconds = $minutes * 60;
-
-        return self::secondsToText($seconds, $returnAsWords);
+        return self::secondsToText($minutes * 60, $returnAsWords);
     }
 
     /**
@@ -714,38 +832,40 @@ class Recipe
      */
     public static function hoursToText($hours, $returnAsWords = false)
     {
-        $seconds = $hours * 3600;
-
-        return self::secondsToText($seconds, $returnAsWords);
+        return self::secondsToText($hours * 3600, $returnAsWords);
     }
 
     /**
-     * Truncate String with or without ellipsis.
+     * Truncate String (shorten) with or without ellipsis.
      *
      * @param string $string      String to truncate
      * @param int    $maxLength   Maximum length of string
      * @param bool   $addEllipsis if True, "..." is added in the end of the string, default true
      * @param bool   $wordsafe    if True, Words will not be cut in the middle
      *
-     * @return string Shotened Text
+     * @return string Shortened Text
      */
     public static function shortenString($string, $maxLength, $addEllipsis = true, $wordsafe = false)
     {
         $ellipsis = '';
         $maxLength = max($maxLength, 0);
+
         if (mb_strlen($string) <= $maxLength) {
             return $string;
         }
+
         if ($addEllipsis) {
             $ellipsis = mb_substr('...', 0, $maxLength);
             $maxLength -= mb_strlen($ellipsis);
             $maxLength = max($maxLength, 0);
         }
+
+        $string = mb_substr($string, 0, $maxLength);
+
         if ($wordsafe) {
             $string = preg_replace('/\s+?(\S+)?$/', '', mb_substr($string, 0, $maxLength));
-        } else {
-            $string = mb_substr($string, 0, $maxLength);
         }
+
         if ($addEllipsis) {
             $string .= $ellipsis;
         }
@@ -754,17 +874,18 @@ class Recipe
     }
 
     /**
-     * Make Curl call.
+     * Make a Curl call.
      *
-     * @param string $url        URL to curl
-     * @param string $method     GET or POST, Default GET
-     * @param mixed  $data       Data to post, Default false
-     * @param mixed  $headers    Additional headers, example: array ("Accept: application/json")
-     * @param bool   $returnInfo Whether or not to retrieve curl_getinfo()
+     * @param string     $url        URL to curl
+     * @param string     $method     GET or POST, Default GET
+     * @param mixed      $data       Data to post, Default false
+     * @param mixed      $headers    Additional headers, example: array ("Accept: application/json")
+     * @param bool       $returnInfo Whether or not to retrieve curl_getinfo()
+     * @param bool|array $auth       Basic authentication params. If array with keys 'username' and 'password' specified, CURLOPT_USERPWD cURL option will be set
      *
-     * @return string|array if $returnInfo is set to True, array is returned with two keys, contents (will contain response) and info (information regarding a specific transfer), otherwise response content is returned
+     * @return array|string if $returnInfo is set to True, array is returned with two keys, contents (will contain response) and info (information regarding a specific transfer), otherwise response content is returned
      */
-    public static function curl($url, $method = 'GET', $data = false, $headers = false, $returnInfo = false)
+    public static function curl($url, $method = 'GET', $data = false, $headers = false, $returnInfo = false, $auth = false)
     {
         $ch = curl_init();
         $info = null;
@@ -788,27 +909,36 @@ class Recipe
                 curl_setopt($ch, CURLOPT_URL, $url);
             }
         }
+
         curl_setopt($ch, CURLOPT_HEADER, false);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+
         if ($headers !== false) {
             curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
         }
+
+        if ($auth !== false && strlen($auth['username']) > 0 && strlen($auth['password']) > 0) {
+            curl_setopt($ch, CURLOPT_USERPWD, $auth['username'].':'.$auth['password']);
+        }
+
         $contents = curl_exec($ch);
         if ($returnInfo) {
             $info = curl_getinfo($ch);
         }
+
         curl_close($ch);
+
         if ($returnInfo) {
             return ['contents' => $contents, 'info' => $info];
-        } else {
-            return $contents;
         }
+
+        return $contents;
     }
 
     /**
-     * Get information on a short URL. Find out where it goes.
+     * Get information on a short URL. Find out where it forwards.
      *
      * @param string $shortURL shortened URL
      *
@@ -816,30 +946,35 @@ class Recipe
      */
     public static function expandShortUrl($shortURL)
     {
-        if (!empty($shortURL)) {
-            $headers = get_headers($shortURL, 1);
-            if (isset($headers['Location'])) {
-                return $headers['Location'];
-            } else {
-                $data = self::curl($shortURL);
-                preg_match_all('/<[\s]*meta[\s]*http-equiv="?'.'([^>"]*)"?[\s]*'.'content="?([^>"]*)"?[\s]*[\/]?[\s]*>/si', $data, $match);
-                if (isset($match) && is_array($match) && count($match) == 3) {
-                    $originals = $match[0];
-                    $names = $match[1];
-                    $values = $match[2];
-                    if ((isset($originals) && isset($names) && isset($values)) && count($originals) == count($names) && count($names) == count($values)) {
-                        $metaTags = [];
-                        for ($i = 0, $limit = count($names); $i < $limit; $i++) {
-                            $metaTags[$names[$i]] = ['html' => htmlentities($originals[$i]), 'value' => $values[$i]];
-                        }
-                    }
+        if (empty($shortURL)) {
+            return false;
+        }
+
+        $headers = get_headers($shortURL, 1);
+        if (isset($headers['Location'])) {
+            return $headers['Location'];
+        }
+
+        $data = self::curl($shortURL);
+
+        preg_match_all('/<[\s]*meta[\s]*http-equiv="?'.'([^>"]*)"?[\s]*'.'content="?([^>"]*)"?[\s]*[\/]?[\s]*>/si', $data, $match);
+
+        if (isset($match) && is_array($match) && count($match) == 3) {
+            $originals = $match[0];
+            $names = $match[1];
+            $values = $match[2];
+            if ((isset($originals) && isset($names) && isset($values)) && count($originals) == count($names) && count($names) == count($values)) {
+                $metaTags = [];
+                for ($i = 0, $limit = count($names); $i < $limit; $i++) {
+                    $metaTags[$names[$i]] = ['html' => htmlentities($originals[$i]), 'value' => $values[$i]];
                 }
-                if (isset($metaTags['refresh']['value']) && !empty($metaTags['refresh']['value'])) {
-                    $returnData = explode('=', $metaTags['refresh']['value']);
-                    if (isset($returnData[1]) && !empty($returnData[1])) {
-                        return $returnData[1];
-                    }
-                }
+            }
+        }
+
+        if (isset($metaTags['refresh']['value']) && !empty($metaTags['refresh']['value'])) {
+            $returnData = explode('=', $metaTags['refresh']['value']);
+            if (isset($returnData[1]) && !empty($returnData[1])) {
+                return $returnData[1];
             }
         }
 
@@ -847,7 +982,7 @@ class Recipe
     }
 
     /**
-     * Get Alexa ranking for domain name.
+     * Get Alexa ranking for a domain name.
      *
      * @param string $domain Domain name to get ranking for
      *
@@ -859,9 +994,11 @@ class Recipe
         $alexa = 'http://data.alexa.com/data?cli=10&dat=s&url=%s';
         $request_url = sprintf($alexa, urlencode($domain));
         $xml = simplexml_load_file($request_url);
+
         if (!isset($xml->SD[1])) {
             return false;
         }
+
         $nodeAttributes = $xml->SD[1]->POPULARITY->attributes();
         $text = (int) $nodeAttributes['TEXT'];
 
@@ -869,104 +1006,20 @@ class Recipe
     }
 
     /**
-     * Get Google page rank for url.
-     *
-     * @param string $url URL to get Google Page rank for
-     *
-     * @return mixed integer or false
-     */
-    public static function getGooglePageRank($url)
-    {
-
-        // based on code by Mohammed Hijazi
-        function StrToNum($Str, $Check, $Magic)
-        {
-            $Int32Unit = 4294967296;
-
-            // 2^32
-            $length = strlen($Str);
-            for ($i = 0; $i < $length; $i++) {
-                $Check *= $Magic;
-                if ($Check >= $Int32Unit) {
-                    $Check = ($Check - $Int32Unit * (int) ($Check / $Int32Unit));
-                    $Check = ($Check < -2147483648) ? ($Check + $Int32Unit) : $Check;
-                }
-                $Check += ord($Str[$i]);
-            }
-
-            return $Check;
-        }
-
-        function HashURL($String)
-        {
-            $Check1 = StrToNum($String, 0x1505, 0x21);
-            $Check2 = StrToNum($String, 0, 0x1003F);
-            $Check1 >>= 2;
-            $Check1 = (($Check1 >> 4) & 0x3FFFFC0) | ($Check1 & 0x3F);
-            $Check1 = (($Check1 >> 4) & 0x3FFC00) | ($Check1 & 0x3FF);
-            $Check1 = (($Check1 >> 4) & 0x3C000) | ($Check1 & 0x3FFF);
-            $T1 = (((($Check1 & 0x3C0) << 4) | ($Check1 & 0x3C)) << 2) | ($Check2 & 0xF0F);
-            $T2 = (((($Check1 & 0xFFFFC000) << 4) | ($Check1 & 0x3C00)) << 0xA) | ($Check2 & 0xF0F0000);
-
-            return $T1 | $T2;
-        }
-
-        function CheckHash($Hashnum)
-        {
-            $CheckByte = 0;
-            $Flag = 0;
-            $HashStr = sprintf('%u', $Hashnum);
-            $length = strlen($HashStr);
-            for ($i = $length - 1; $i >= 0; $i--) {
-                $Re = $HashStr[$i];
-                if (1 === ($Flag % 2)) {
-                    $Re += $Re;
-                    $Re = (int) ($Re / 10) + ($Re % 10);
-                }
-                $CheckByte += $Re;
-                $Flag++;
-            }
-            $CheckByte %= 10;
-            if (0 !== $CheckByte) {
-                $CheckByte = 10 - $CheckByte;
-                if (1 === ($Flag % 2)) {
-                    if (1 === ($CheckByte % 2)) {
-                        $CheckByte += 9;
-                    }
-                    $CheckByte >>= 1;
-                }
-            }
-
-            return '7'.$CheckByte.$HashStr;
-        }
-
-        $query = 'http://toolbarqueries.google.com/tbr?client=navclient-auto&ch='.CheckHash(HashURL($url)).'&features=Rank&q=info:'.$url.'&num=100&filter=0';
-
-        $data = file_get_contents($query);
-        $pos = strpos($data, 'Rank_');
-
-        if ($pos === false) {
-            return false;
-        } else {
-            $pagerank = substr($data, $pos + 9);
-
-            return (int) $pagerank;
-        }
-    }
-
-    /**
      * Shorten URL via tinyurl.com service.
      *
      * @param string $url URL to shorten
      *
-     * @return mixed shortend url or false
+     * @return mixed shortened url or false
      */
     public static function getTinyUrl($url)
     {
-        if (strpos($url, 'http') === false) {
+        if (strpos($url, 'http') !== 0) {
             $url = 'http://'.$url;
         }
+
         $gettiny = self::curl('http://tinyurl.com/api-create.php?url='.$url);
+
         if (isset($gettiny) && !empty($gettiny)) {
             return $gettiny;
         }
@@ -984,10 +1037,8 @@ class Recipe
     public static function getKeywordSuggestionsFromGoogle($keyword)
     {
         $data = self::curl('http://suggestqueries.google.com/complete/search?output=firefox&client=firefox&hl=en-US&q='.urlencode($keyword));
-        if (($data = json_decode($data, true)) !== null) {
-            if (!empty($data[1])) {
-                return $data[1];
-            }
+        if (($data = json_decode($data, true)) !== null && !empty($data[1])) {
+            return $data[1];
         }
 
         return false;
@@ -1022,7 +1073,7 @@ class Recipe
     }
 
     /**
-     * Build notification message.
+     * Build (HTML) notification message.
      *
      * @param string $notification Text to display in notification
      * @param string $type         Notification type, available notifications: success, warning, error and info
@@ -1035,7 +1086,6 @@ class Recipe
         $attr = self::arrayToString($attributes);
         if (isset($notification) && !empty($notification)) {
             switch (strtolower($type)) {
-
                 case 'success':
                     $css = 'border-color: #bdf2a6;color: #2a760a;background-color: #eefde7;';
                     break;
@@ -1061,11 +1111,11 @@ class Recipe
     }
 
     /**
-     * Parse text to find url's for embed enabled services like: youtube.com, blip.tv, vimeo.com, dailymotion.com, flickr.com, smugmug.com, hulu.com, revision3.com, wordpress.tv, funnyordie.com, soundcloud.com, slideshare.net and instagram.com and embed elements automatically.
+     * Parse text to find URL's for embed enabled services like: youtube.com, blip.tv, vimeo.com, dailymotion.com, flickr.com, smugmug.com, hulu.com, revision3.com, wordpress.tv, funnyordie.com, soundcloud.com, slideshare.net and instagram.com and embed elements automatically.
      *
      * @param string $string text to parse
-     * @param string $width  max width of embeded element
-     * @param string $height max heigth of embeded element
+     * @param string $width  max width of embedded element
+     * @param string $height max height of embedded element
      *
      * @return string
      */
@@ -1077,13 +1127,14 @@ class Recipe
             $url = explode('#', $url);
             $url = reset($url);
 
-            $provider = $requestURL = false;
+            $requestURL = false;
 
             foreach ($providers as $pattern => $provider) {
                 if (preg_match($pattern, $url)) {
                     if ($provider == 'http://www.youtube.com/oembed') {
                         $url = str_replace('www.youtu.be/', 'www.youtube.com/watch?v=', $url);
                     }
+
                     $requestURL = str_replace('{format}', 'json', $provider);
                     break;
                 }
@@ -1120,9 +1171,9 @@ class Recipe
                     default:
                         return $matches[0];
                 }
-            } else {
-                return $matches[0];
             }
+
+            return $matches[0];
         }, $string);
 
         return $string;
@@ -1138,9 +1189,7 @@ class Recipe
      */
     public static function makeClickableLinks($string, $attributes = [])
     {
-        $attr = self::arrayToString($attributes);
-
-        return preg_replace('@(https?://([-\w\.]+[-\w])+(:\d+)?(/([\w/_\.#-]*(\?\S+)?[^\.\s])?)?)@', '<a href="$1" '.$attr.'>$1</a>', $string);
+        return preg_replace('@(https?://([-\w\.]+[-\w])+(:\d+)?(/([\w/_\.#-]*(\?\S+)?[^\.\s])?)?)@', '<a href="$1" '.self::arrayToString($attributes).'>$1</a>', $string);
     }
 
     /**
@@ -1200,9 +1249,117 @@ class Recipe
         }
         $header = '';
         list($debugfile) = debug_backtrace();
+
         if (!empty($debugfile['file'])) {
             $header = '<h4 style="border-bottom:1px solid #bbb;font-weight:bold;margin:0 0 10px 0;padding:3px 0 10px 0">'.$debugfile['file'].'</h4>';
         }
+
         echo '<pre style="background-color: #CDDCF4;border: 1px solid #bbb;border-radius: 4px;-moz-border-radius:4px;-webkit-border-radius\:4px;font-size:12px;line-height:1.4em;margin:30px;padding:7px">'.$header.$output.'</pre>';
+    }
+
+    /**
+     * Return referer page.
+     *
+     * @return string|false
+     */
+    public static function getReferer()
+    {
+        return isset($_SERVER['HTTP_REFERER']) ? $_SERVER['HTTP_REFERER'] : false;
+    }
+
+    /**
+     * Captures output via ob_get_contents(), tries to enable gzip, removes whitespace from captured output and echos back.
+     *
+     * @return string whitespace stripped output
+     */
+    public static function compressPage()
+    {
+        register_shutdown_function(function () {
+            $buffer = preg_replace(['/\>[^\S ]+/s', '/[^\S ]+\</s', '/(\s)+/s'], ['>', '<', '\\1'], ob_get_contents());
+            ob_end_clean();
+            if (!((ini_get('zlib.output_compression') == 'On' ||
+                        ini_get('zlib.output_compression_level') > 0) ||
+                    ini_get('output_handler') == 'ob_gzhandler') &&
+                !empty($_SERVER['HTTP_ACCEPT_ENCODING']) &&
+                extension_loaded('zlib') &&
+                strpos($_SERVER['HTTP_ACCEPT_ENCODING'], 'gzip') !== false
+            ) {
+                ob_start('ob_gzhandler');
+            }
+            echo $buffer;
+        });
+    }
+
+    /**
+     *  Takes a number and adds “th, st, nd, rd, th” after it.
+     *
+     * @param int $cardinal Number to add termination
+     *
+     * @return string
+     */
+    public static function ordinal($cardinal)
+    {
+        $test_c = abs($cardinal) % 10;
+        $ext = ((abs($cardinal) % 100 < 21 && abs($cardinal) % 100 > 4)
+            ? 'th'
+            : (($test_c < 4)
+                ? ($test_c < 3)
+                    ? ($test_c < 2)
+                        ? ($test_c < 1)
+                            ? 'th'
+                            : 'st'
+                        : 'nd'
+                    : 'rd'
+                : 'th'));
+
+        return $cardinal.$ext;
+    }
+
+    /**
+     * Returns the number of days for the given month and year.
+     *
+     * @param int $month Month to check
+     * @param int $year  Year to check
+     *
+     * @return int
+     */
+    public static function numberOfDaysInMonth($month = 0, $year = 0)
+    {
+        if ($month < 1 or $month > 12) {
+            return 0;
+        }
+
+        if (!is_numeric($year) or strlen($year) != 4) {
+            $year = date('Y');
+        }
+
+        if ($month == 2) {
+            if ($year % 400 == 0 or ($year % 4 == 0 and $year % 100 != 0)) {
+                return 29;
+            }
+        }
+
+        $days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+        return $days_in_month[$month - 1];
+    }
+
+    /**
+     * print_r's Variable in <pre> tags.
+     *
+     * @param mixed $variable variable to print_r
+     *
+     * @return void
+     */
+    public static function pr($variable)
+    {
+        echo '<pre>';
+        print_r($variable);
+        echo '</pre>';
+    }
+
+    public static function sanitizeFileName($filename)
+    {
+        return str_replace([' ', '"', "'", '&', '/', '\\', '?', '#'], '_', $filename);
     }
 }
